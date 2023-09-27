@@ -30,6 +30,8 @@ from randomaug import RandAugment
 from models.vit import ViT
 from models.convmixer import ConvMixer
 
+from concept_erasure import QuadraticEraser, QuadraticFitter
+
 # parsers
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate') # resnets.. 1e-3, Vit..1e-4
@@ -46,6 +48,7 @@ parser.add_argument('--n_epochs', type=int, default='200')
 parser.add_argument('--patch', default='4', type=int, help="patch for ViT")
 parser.add_argument('--dimhead', default="512", type=int)
 parser.add_argument('--convkernel', default='8', type=int, help="parameter for convmixer")
+parser.add_argument('--qleace', action='store_true', help='enable quadratic concept erasure')
 
 args = parser.parse_args()
 
@@ -100,6 +103,20 @@ trainloader = torch.utils.data.DataLoader(trainset, batch_size=bs, shuffle=True,
 
 testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
 testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=8)
+
+if args.qleace:
+    fitter = QuadraticFitter(3 * int(args.size) ** 2, 10, device=device)
+
+    QLEACE_EPOCHS = 10
+    for epoch in range(QLEACE_EPOCHS):
+        for batch_idx, (inputs, targets) in enumerate(trainloader):
+            fitter.update(
+                inputs.to(device).flatten(1), targets.to(device)
+            )
+    
+    eraser = fitter.eraser
+else:
+    eraser = lambda x, _: x
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
@@ -256,6 +273,8 @@ def train(epoch):
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
+        inputs = eraser(inputs.flatten(1), targets).reshape_as(inputs)
+
         # Train with amp
         with torch.cuda.amp.autocast(enabled=use_amp):
             outputs = net(inputs)
@@ -284,6 +303,8 @@ def test(epoch):
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(testloader):
             inputs, targets = inputs.to(device), targets.to(device)
+            inputs = eraser(inputs.flatten(1), targets).reshape_as(inputs)
+
             outputs = net(inputs)
             loss = criterion(outputs, targets)
 
@@ -302,6 +323,11 @@ def test(epoch):
         state = {"model": net.state_dict(),
               "optimizer": optimizer.state_dict(),
               "scaler": scaler.state_dict()}
+        
+        # Save Q-LEACE eraser if enabled
+        if isinstance(eraser, QuadraticEraser):
+            state["eraser"] = eraser
+
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
         torch.save(state, './checkpoint/'+args.net+'-{}-ckpt.t7'.format(args.patch))
