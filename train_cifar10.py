@@ -65,7 +65,7 @@ bs = int(args.bs)
 imsize = int(args.size)
 
 use_amp = not args.noamp
-aug = args.noaug
+aug = not args.noaug
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0  # best test accuracy
